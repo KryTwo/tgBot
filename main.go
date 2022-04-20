@@ -1,58 +1,96 @@
 package main
 
-/*
-TODO:
-
-. Исправление ошибок
-. Проверка на существование папок
-. Детальные логи
-. Шифрование данных, полученных от пользователя
-
-
-*/
-
 import (
-	"flag"
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
+	_ "github.com/lib/pq"
 	"log"
-	tgClient "main/clients/telegram"
-	event_consumer "main/consumer/event-consumer"
-	"main/events/telegram"
-	"main/storage/files"
+	"main/repository"
+	"main/service"
+	"time"
 )
 
-const (
-	tgBotHost   = "api.telegram.org"
-	storagePath = "files_storage"
-	batchSize   = 100
+var (
+	// глобальная переменная в которой храним токен
+	telegramBotToken string
 )
 
-// 5297059869:AAEQ7sgCb1vrua_QPm8Rtjs6cdv2DddJ13A
-func main() {
-
-	eventsProcessor := telegram.New(
-		tgClient.New(tgBotHost, mustToken()),
-		files.New(storagePath),
-	)
-
-	log.Print("service started")
-	consumer := event_consumer.New(eventsProcessor, eventsProcessor, batchSize)
-	if err := consumer.Start(); err != nil {
-		log.Fatal()
-	}
-}
-
-func mustToken() string {
-	token := flag.String(
-		"tg-bot-token",
-		"",
-		"token for access to telegram bot",
-	)
-
+/*func init() {
+	// принимаем на входе флаг -telegrambottoken
+	flag.StringVar(&telegramBotToken, "telegrambottoken", "", "Telegram Bot Token")
 	flag.Parse()
 
-	if *token == "" {
-		log.Fatal("token is not specified")
+	// без него не запускаемся
+	if telegramBotToken == "" {
+		log.Print("-telegrambottoken is required")
+		os.Exit(1)
+	}
+}*/
+
+func main() {
+	db := repository.NewDB()
+	defer db.Close()
+	/*out, err := repository.GetStatsMe(db, "KryTwo")
+
+	if err != nil {
+		log.Fatal(err)
 	}
 
-	return *token
+	fmt.Printf("%v\n", out)
+	fmt.Printf("%T\n", out)*/
+
+	// используя токен создаем новый инстанс бота
+	bot, err := tgbotapi.NewBotAPI("")
+	if err != nil {
+		log.Panic(err)
+	}
+
+	log.Printf("Authorized on account %s", bot.Self.UserName)
+
+	// u - структура с конфигом для получения апдейтов
+	u := tgbotapi.NewUpdate(0)
+	u.Timeout = 60
+
+	// используя конфиг u создаем канал в который будут прилетать новые сообщения
+	updates, err := bot.GetUpdatesChan(u)
+
+	// в канал updates прилетают структуры типа Update
+	// вычитываем их и обрабатываем
+	var reply string
+	var lastUse int
+
+	for update := range updates {
+		// логируем от кого какое сообщение пришло
+		log.Printf("[%s] %s", update.Message.From.UserName, update.Message.Text)
+
+		// свитч на обработку комманд
+		// комманда - сообщение, начинающееся с "/"
+		switch update.Message.Command() {
+		case "make_me_pidor":
+			reply = service.NewUser(db, update.Message.From.UserName)
+			msg := tgbotapi.NewMessage(update.Message.Chat.ID, reply)
+			bot.Send(msg)
+		case "who_is_pidor":
+			reply = service.Stats(db)
+			msg := tgbotapi.NewMessage(update.Message.Chat.ID, reply)
+			bot.Send(msg)
+		case "wheel_of_fortune":
+			if lastUse == time.Now().YearDay() {
+				reply = "Сегодня пидор уже выбран, приходите завтра."
+				msg := tgbotapi.NewMessage(update.Message.Chat.ID, reply)
+				bot.Send(msg)
+				continue
+			}
+			reply = service.IncRandUser(db, update.Message.From.UserName)
+			msg := tgbotapi.NewMessage(update.Message.Chat.ID, reply)
+			bot.Send(msg)
+			lastUse = time.Now().YearDay()
+		case "i_am_not_a_pidor":
+			reply = service.StatsMe(db, update.Message.From.UserName)
+			msg := tgbotapi.NewMessage(update.Message.Chat.ID, reply)
+			bot.Send(msg)
+		}
+
+		time.Sleep(1 * time.Second)
+	}
+
 }
